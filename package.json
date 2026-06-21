@@ -1,0 +1,23 @@
+{
+  "name": "lumix-image-uploader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fast image offload from a Panasonic Lumix DC-S5 over Wi-Fi. Phase 1: local agent link prover (handshake + keep-alive + getstate).",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "lumix-agent": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "node --experimental-strip-types --no-warnings src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
