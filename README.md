@@ -6,10 +6,10 @@ background downloading), not raw link throughput. The camera's Wi-Fi is the real
 bottleneck, so the architecture optimises for "see everything instantly, pull
 only what you want, in the background" rather than trying to out-run USB.
 
-> **Status: Phase 1 — link prover.** This repo currently contains only the local
-> agent's first job: prove and hold the camera link (access handshake +
-> keep-alive + `getstate` probe). Browse, transfer, and the web app come next.
-> See [Roadmap](#roadmap).
+> **Status: Phase 1 — link prover.** This repo contains the local agent's first
+> job: prove and hold the camera link (access handshake + keep-alive + `getstate`
+> probe), drivable from either a [CLI](#usage) or a [browser UI](#web-ui-front-end).
+> Browse, transfer, and the full gallery web app come next — see [Roadmap](#roadmap).
 
 ## Architecture (where this is heading)
 
@@ -81,6 +81,70 @@ npm run build
 npm start -- --discover
 ```
 
+## Web UI (front end)
+
+You don't have to use the CLI — the agent can serve a small browser UI and you
+drive everything from the page. **The browser talks only to the agent over plain
+`http://localhost`; it never talks to the camera.** That's deliberate: it sidesteps
+the browser's HTTPS-to-HTTP mixed-content block and CORS entirely, because all the
+camera I/O happens in the agent.
+
+### Run it
+
+```bash
+npm install            # first time only
+
+# AP mode (joined the camera's Wi-Fi):
+npm run web -- --host 192.168.54.1
+
+# Client mode (camera on your network) — discover + auto-open the browser:
+npm run web -- --discover --open
+```
+
+You'll see:
+
+```
+  Lumix agent UI:  http://localhost:4545
+  Target camera:   192.168.54.1:80
+  Open the URL and click "Connect". Ctrl+C to stop.
+```
+
+Open <http://localhost:4545>, click **Connect**, and the page shows the
+connection badge, live camera state (mode / battery / capacity), and a streaming
+log that updates on every keep-alive tick. Click **Disconnect** (or Ctrl+C in the
+terminal) to release the camera cleanly.
+
+### Options
+
+Same as the CLI, plus `--port <n>` (web UI port, default `4545`) and `--open`
+(try to open your default browser). Run `npm run web -- --help` for the full
+list. The web UI port is also settable via `LUMIX_WEB_PORT`.
+
+### How the page talks to the agent
+
+The front end is plain HTML/CSS/JS in [`public/index.html`](public/index.html) —
+no framework, no build step. It uses a tiny REST + Server-Sent-Events surface the
+agent exposes:
+
+| Method & path        | Purpose                                                       |
+| -------------------- | ------------------------------------------------------------- |
+| `GET  /`             | The front-end page.                                           |
+| `GET  /api/status`   | JSON snapshot: target, connected, last state.                 |
+| `GET  /api/events`   | Server-Sent Events stream of live connection + state updates. |
+| `POST /api/connect`  | Handshake + start keep-alive. Returns the error + a hint on failure. |
+| `POST /api/disconnect` | Stop keep-alive + release the camera.                       |
+
+> SSE (browser `EventSource`) keeps the agent dependency-free and is enough for
+> one-way live updates in phase 1. Phase 4 upgrades this to a WebSocket when the
+> gallery needs bidirectional/binary download-progress messages.
+
+### Building your own front end on top
+
+If you'd rather build the gallery in React (per the roadmap), point it at the
+same `http://localhost:<port>` REST + SSE endpoints above — keep it served from,
+or proxied through, the agent's origin so there's no mixed-content/CORS block.
+The endpoint surface grows in later phases (`/api/photos`, `/api/photos/:id/download`).
+
 ### Options
 
 | Flag              | Meaning                                                      |
@@ -118,9 +182,14 @@ identity): `LUMIX_HOST`, `LUMIX_PORT`, `LUMIX_CONTROLLER_NAME`, `LUMIX_GUID`,
 ## Project layout
 
 ```
+public/
+  index.html          Front end: status, live state, connect/disconnect (no build)
 src/
   index.ts            CLI entry: discover → handshake → probe → keep-alive
+  web.ts              Web entry: run the agent + serve the UI over http://localhost
   config.ts           Config + env overrides
+  server/
+    httpServer.ts     REST + SSE surface the browser talks to (never the camera)
   lumix/
     camCgi.ts         Low-level cam.cgi HTTP transport (timeout, result check)
     client.ts         LumixClient: connect / getState / keep-alive / disconnect
@@ -130,12 +199,14 @@ src/
 
 ## Scripts
 
-| Script              | Does                                              |
-| ------------------- | ------------------------------------------------- |
-| `npm run dev`       | Run from source via Node's TypeScript strip mode. |
-| `npm run build`     | Compile to `dist/`.                               |
-| `npm start`         | Run the compiled `dist/index.js`.                 |
-| `npm run typecheck` | Type-check without emitting.                      |
+| Script              | Does                                                   |
+| ------------------- | ------------------------------------------------------ |
+| `npm run dev`       | Run the CLI from source via Node's TypeScript strip mode. |
+| `npm run web`       | Run the agent + browser UI from source.                |
+| `npm run build`     | Compile to `dist/`.                                    |
+| `npm start`         | Run the compiled CLI (`dist/index.js`).                |
+| `npm run start:web` | Run the compiled web agent (`dist/web.js`).            |
+| `npm run typecheck` | Type-check without emitting.                           |
 
 ## Troubleshooting
 

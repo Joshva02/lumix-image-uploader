@@ -12,8 +12,10 @@
   },
   "scripts": {
     "dev": "node --experimental-strip-types --no-warnings src/index.ts",
+    "web": "node --experimental-strip-types --no-warnings src/web.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:web": "node dist/web.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

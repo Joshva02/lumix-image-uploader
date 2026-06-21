@@ -25,6 +25,9 @@ export interface AgentConfig {
   requestTimeoutMs: number;
   /** How long to listen for SSDP replies during discovery (ms). */
   discoveryTimeoutMs: number;
+  /** Port the agent serves the web UI on (plain HTTP, localhost) so the browser
+   *  has no HTTPS-to-HTTP mixed-content block. */
+  webPort: number;
 }
 
 /**
@@ -44,6 +47,7 @@ export function loadConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     keepAliveIntervalMs: Number(process.env.LUMIX_KEEPALIVE_MS ?? 5000),
     requestTimeoutMs: Number(process.env.LUMIX_TIMEOUT_MS ?? 8000),
     discoveryTimeoutMs: Number(process.env.LUMIX_DISCOVERY_MS ?? 4000),
+    webPort: Number(process.env.LUMIX_WEB_PORT ?? 4545),
     ...overrides,
   };
 }
