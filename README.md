@@ -6,10 +6,11 @@ background downloading), not raw link throughput. The camera's Wi-Fi is the real
 bottleneck, so the architecture optimises for "see everything instantly, pull
 only what you want, in the background" rather than trying to out-run USB.
 
-> **Status: Phase 1 — link prover.** This repo contains the local agent's first
-> job: prove and hold the camera link (access handshake + keep-alive + `getstate`
-> probe), drivable from either a [CLI](#usage) or a [browser UI](#web-ui-front-end).
-> Browse, transfer, and the full gallery web app come next — see [Roadmap](#roadmap).
+> **Status: Phases 1–2.** The agent proves and holds the camera link (handshake
+> + keep-alive + `getstate`) **and** browses the card over UPnP to render a
+> thumbnail gallery, drivable from a [CLI](#usage) or a [browser UI](#web-ui-front-end).
+> Resumable/background downloads and the polished workflow come next — see
+> [Roadmap](#roadmap).
 
 ## Architecture (where this is heading)
 
@@ -111,8 +112,15 @@ You'll see:
 
 Open <http://localhost:4545>, click **Connect**, and the page shows the
 connection badge, live camera state (mode / battery / capacity), and a streaming
-log that updates on every keep-alive tick. Click **Disconnect** (or Ctrl+C in the
-terminal) to release the camera cleanly.
+log that updates on every keep-alive tick. Then click **Load photos** to switch
+the camera to playback, browse the card, and render a thumbnail **gallery** — each
+tile shows the file name, RAW/JPG badges, and links to open the full JPG or
+download the RW2. Filter by JPG/RAW, and **Refresh** to re-browse. Click
+**Disconnect** (or Ctrl+C in the terminal) to release the camera cleanly.
+
+> Thumbnails and files are **proxied through the agent** — the browser requests
+> `/api/photos/:id/thumb`, never the camera directly — so the same
+> mixed-content/CORS-free guarantee holds for image bytes too.
 
 ### Options
 
@@ -133,6 +141,9 @@ agent exposes:
 | `GET  /api/events`   | Server-Sent Events stream of live connection + state updates. |
 | `POST /api/connect`  | Handshake + start keep-alive. Returns the error + a hint on failure. |
 | `POST /api/disconnect` | Stop keep-alive + release the camera.                       |
+| `GET  /api/photos`   | Switch to playback, browse the card via UPnP, list photos. `?refresh=1` re-browses. |
+| `GET  /api/photos/:id/thumb` | Proxied thumbnail bytes for one photo.                |
+| `GET  /api/photos/:id/file?kind=jpeg\|raw` | Proxied full JPG or RW2 (download). |
 
 > SSE (browser `EventSource`) keeps the agent dependency-free and is enough for
 > one-way live updates in phase 1. Phase 4 upgrades this to a WebSocket when the
@@ -160,7 +171,9 @@ The endpoint surface grows in later phases (`/api/photos`, `/api/photos/:id/down
 
 All config is also settable via env vars (handy for a stable controller
 identity): `LUMIX_HOST`, `LUMIX_PORT`, `LUMIX_CONTROLLER_NAME`, `LUMIX_GUID`,
-`LUMIX_KEEPALIVE_MS`, `LUMIX_TIMEOUT_MS`, `LUMIX_DISCOVERY_MS`.
+`LUMIX_KEEPALIVE_MS`, `LUMIX_TIMEOUT_MS`, `LUMIX_DISCOVERY_MS`, `LUMIX_WEB_PORT`,
+`LUMIX_CDS_DESCRIPTION_URL` (skip SSDP and point straight at the camera's UPnP
+description URL — useful when SSDP is flaky).
 
 > Tip: set a fixed `LUMIX_GUID` so the camera recognises this agent as the same
 > controller across runs.
@@ -183,7 +196,7 @@ identity): `LUMIX_HOST`, `LUMIX_PORT`, `LUMIX_CONTROLLER_NAME`, `LUMIX_GUID`,
 
 ```
 public/
-  index.html          Front end: status, live state, connect/disconnect (no build)
+  index.html          Front end: status, live state, gallery grid (no build)
 src/
   index.ts            CLI entry: discover → handshake → probe → keep-alive
   web.ts              Web entry: run the agent + serve the UI over http://localhost
@@ -192,9 +205,11 @@ src/
     httpServer.ts     REST + SSE surface the browser talks to (never the camera)
   lumix/
     camCgi.ts         Low-level cam.cgi HTTP transport (timeout, result check)
-    client.ts         LumixClient: connect / getState / keep-alive / disconnect
+    client.ts         LumixClient: connect / playback / getState / keep-alive
     discovery.ts      SSDP (UPnP) discovery for client mode
-    xml.ts            Minimal XML field extraction for cam.cgi replies
+    contentDirectory.ts  UPnP device-description + SOAP Browse + DIDL-Lite parsing
+    catalog.ts        PhotoCatalog: playback → locate CDS → browse → cache
+    xml.ts            Minimal XML field extraction for cam.cgi / DIDL replies
 ```
 
 ## Scripts
@@ -225,12 +240,13 @@ Phase 1 (this repo) de-risks the unknown — the link itself — before anything
 built on top.
 
 1. **Prove the link** ✅ — handshake, keep-alive, `getstate`.
-2. **Browse + thumbnails** — switch to playback (`camcmd&value=playmode`), walk
-   the UPnP ContentDirectory, list every shot with its thumbnail.
+2. **Browse + thumbnails** ✅ — switch to playback (`camcmd&value=playmode`), walk
+   the UPnP ContentDirectory, list every shot with its thumbnail in a gallery
+   grid (with JPG/RAW filter and per-file open/download links).
 3. **Selective download** — pull a chosen JPG, then a chosen RW2, with
-   resume-on-failure (HTTP range requests).
-4. **Web app** — gallery grid from thumbnails, click to download, WebSocket
-   progress bars, JPG/RAW filter.
+   resume-on-failure (HTTP range requests) and live progress. *(Files already
+   download via the proxy; phase 3 adds resume + progress + save-to-disk.)*
+4. **Web app polish** — richer gallery, WebSocket progress bars, bulk select.
 5. **Workflow polish** — background auto-pull of new shots, JPG-only fast mode,
    bulk select, auto-save to a watched folder / NAS / cloud.
 

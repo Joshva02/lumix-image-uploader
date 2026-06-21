@@ -40,3 +40,24 @@ export function parseState(xml: string): Record<string, string> {
 export function isOkResult(xml: string): boolean {
   return tagText(xml, "result")?.toLowerCase() === "ok";
 }
+
+/**
+ * Decode the standard XML entities. Used to unwrap the DIDL-Lite document the
+ * camera embeds (escaped) inside a SOAP `<Result>` element. `&amp;` is decoded
+ * last so sequences like `&amp;lt;` survive as `&lt;`.
+ */
+export function unescapeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&amp;/g, "&");
+}
+
+/** Value of an XML attribute from a raw tag-attribute string, or undefined. */
+export function attrOf(attrs: string, name: string): string | undefined {
+  return new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i").exec(attrs)?.[1];
+}

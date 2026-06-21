@@ -28,6 +28,10 @@ export interface AgentConfig {
   /** Port the agent serves the web UI on (plain HTTP, localhost) so the browser
    *  has no HTTPS-to-HTTP mixed-content block. */
   webPort: number;
+  /** Optional: the camera's UPnP device-description URL. When set, the agent
+   *  uses it directly instead of locating the ContentDirectory via SSDP (handy
+   *  when SSDP is flaky, or for testing). */
+  cdsDescriptionUrl?: string;
 }
 
 /**
@@ -48,6 +52,7 @@ export function loadConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     requestTimeoutMs: Number(process.env.LUMIX_TIMEOUT_MS ?? 8000),
     discoveryTimeoutMs: Number(process.env.LUMIX_DISCOVERY_MS ?? 4000),
     webPort: Number(process.env.LUMIX_WEB_PORT ?? 4545),
+    cdsDescriptionUrl: process.env.LUMIX_CDS_DESCRIPTION_URL,
     ...overrides,
   };
 }

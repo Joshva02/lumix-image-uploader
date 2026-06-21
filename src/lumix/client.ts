@@ -77,6 +77,26 @@ export class LumixClient extends EventEmitter<LumixClientEvents> {
     });
   }
 
+  /**
+   * Switch the camera to playback mode. Required before browsing the card via
+   * the UPnP ContentDirectory — in record mode the media server has nothing to
+   * list. Safe to call repeatedly.
+   */
+  async setPlaybackMode(): Promise<void> {
+    await camCgiOk(this.cgi, [
+      ["mode", "camcmd"],
+      ["value", "playmode"],
+    ]);
+  }
+
+  /** Switch the camera back to record mode. */
+  async setRecordMode(): Promise<void> {
+    await camCgiOk(this.cgi, [
+      ["mode", "camcmd"],
+      ["value", "recmode"],
+    ]);
+  }
+
   /** Query `getstate` once and return a parsed snapshot. */
   async getState(): Promise<CameraState> {
     const body = await camCgiRaw(this.cgi, [["mode", "getstate"]]);

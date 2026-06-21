@@ -63,6 +63,38 @@
       .stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
       .stat .v { font-size: 20px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
       h2 { font-size: 14px; color: var(--muted); margin: 0 0 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+      select {
+        font: inherit; background: #21262d; color: var(--text);
+        border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px;
+      }
+      .muted { color: var(--muted); font-size: 13px; }
+      #gallery {
+        display: grid; gap: 12px; margin-top: 14px;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      }
+      .card {
+        background: #11141a; border: 1px solid var(--line);
+        border-radius: 8px; overflow: hidden; display: flex; flex-direction: column;
+      }
+      .card .thumb {
+        aspect-ratio: 3 / 2; background: #0b0d11 center/contain no-repeat;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .card .thumb.empty::after { content: "no preview"; color: var(--muted); font-size: 12px; }
+      .card-meta { padding: 8px 10px; display: flex; align-items: center; gap: 6px; }
+      .card-meta .name {
+        font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .b { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; letter-spacing: 0.03em; }
+      .b.raw { background: #3a2a12; color: var(--warn); }
+      .b.jpg { background: #11324a; color: var(--accent); }
+      .card-actions { display: flex; border-top: 1px solid var(--line); }
+      .card-actions a {
+        flex: 1; text-align: center; padding: 7px 0; font-size: 12px; font-weight: 600;
+        color: var(--accent); text-decoration: none;
+      }
+      .card-actions a + a { border-left: 1px solid var(--line); }
       #log {
         font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
         background: #0b0d11; border: 1px solid var(--line); border-radius: 8px;
@@ -105,6 +137,22 @@
       </section>
 
       <section class="panel">
+        <div class="row">
+          <h2 style="margin:0">Gallery</h2>
+          <span class="spacer"></span>
+          <select id="filter" title="Filter by type">
+            <option value="all">All</option>
+            <option value="jpeg">JPG only</option>
+            <option value="raw">RAW only</option>
+          </select>
+          <button id="btn-photos" disabled>Load photos</button>
+          <button id="btn-refresh" disabled title="Re-browse the card">Refresh</button>
+        </div>
+        <div id="gallery-status" class="muted" style="margin-top:10px">Connect to browse the card.</div>
+        <div id="gallery"></div>
+      </section>
+
+      <section class="panel">
         <h2>Live log</h2>
         <div id="log"></div>
       </section>
@@ -114,6 +162,9 @@
       const $ = (id) => document.getElementById(id);
       const badge = $("badge"), badgeText = $("badge-text"), log = $("log");
       const btnConnect = $("btn-connect"), btnDisconnect = $("btn-disconnect");
+      const btnPhotos = $("btn-photos"), btnRefresh = $("btn-refresh");
+      const filter = $("filter"), gallery = $("gallery"), galleryStatus = $("gallery-status");
+      let allPhotos = [];
 
       function setBadge(stateClass, text) {
         badge.className = "badge " + stateClass;
@@ -122,7 +173,14 @@
       function setConnected(connected) {
         btnConnect.disabled = connected;
         btnDisconnect.disabled = !connected;
+        btnPhotos.disabled = !connected;
+        btnRefresh.disabled = !connected;
         setBadge(connected ? "connected" : "", connected ? "connected" : "not connected");
+        if (!connected) {
+          allPhotos = [];
+          gallery.innerHTML = "";
+          galleryStatus.textContent = "Connect to browse the card.";
+        }
       }
       function shortTime(iso) {
         try { return new Date(iso).toISOString().slice(11, 19); } catch { return iso; }
@@ -194,6 +252,63 @@
         setConnected(false);
         applyState(null);
       });
+
+      // --- Gallery -----------------------------------------------------------
+      function renderPhotos() {
+        const f = filter.value;
+        const list = allPhotos.filter((p) =>
+          f === "raw" ? p.hasRaw : f === "jpeg" ? p.hasJpeg && !p.hasRaw : true,
+        );
+        galleryStatus.textContent = list.length
+          ? `Showing ${list.length} of ${allPhotos.length} photo${allPhotos.length === 1 ? "" : "s"}.`
+          : allPhotos.length
+            ? "No photos match this filter."
+            : "No photos on the card.";
+        gallery.innerHTML = list.map(cardHtml).join("");
+      }
+      function cardHtml(p) {
+        const thumb = p.thumb
+          ? `<div class="thumb"><img loading="lazy" src="${p.thumb}" alt=""></div>`
+          : `<div class="thumb empty"></div>`;
+        const badges =
+          (p.hasRaw ? '<span class="b raw">RAW</span>' : "") +
+          (p.hasJpeg ? '<span class="b jpg">JPG</span>' : "");
+        const actions =
+          (p.jpeg ? `<a href="${p.jpeg}" target="_blank" rel="noopener">JPG</a>` : "") +
+          (p.raw ? `<a href="${p.raw}">RW2</a>` : "");
+        return (
+          `<div class="card">${thumb}` +
+          `<div class="card-meta"><span class="name" title="${esc(p.title)}">${esc(p.title)}</span>${badges}</div>` +
+          (actions ? `<div class="card-actions">${actions}</div>` : "") +
+          `</div>`
+        );
+      }
+      function esc(s) {
+        return escapeHtml(s);
+      }
+      async function loadPhotos(refresh) {
+        btnPhotos.disabled = true;
+        btnRefresh.disabled = true;
+        galleryStatus.textContent = refresh ? "Re-browsing the card…" : "Browsing the card…";
+        try {
+          const r = await fetch("/api/photos" + (refresh ? "?refresh=1" : ""));
+          const body = await r.json();
+          if (!r.ok) {
+            galleryStatus.textContent = "Browse failed: " + (body.error || r.status);
+            return;
+          }
+          allPhotos = body.photos;
+          renderPhotos();
+        } catch (e) {
+          galleryStatus.textContent = "Browse failed: " + e.message;
+        } finally {
+          btnPhotos.disabled = false;
+          btnRefresh.disabled = false;
+        }
+      }
+      btnPhotos.addEventListener("click", () => loadPhotos(false));
+      btnRefresh.addEventListener("click", () => loadPhotos(true));
+      filter.addEventListener("change", renderPhotos);
 
       // Live updates via Server-Sent Events.
       const es = new EventSource("/api/events");

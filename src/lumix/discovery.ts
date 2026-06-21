@@ -112,3 +112,15 @@ export async function discoverLumix(timeoutMs: number): Promise<DiscoveredDevice
   const devices = await discover(timeoutMs);
   return devices.find(looksLikeLumix);
 }
+
+/**
+ * Find the responder at a specific IP — used to recover the camera's UPnP
+ * description URL (`LOCATION`) when we already know its address (e.g. AP mode).
+ */
+export async function discoverByHost(
+  host: string,
+  timeoutMs: number,
+): Promise<DiscoveredDevice | undefined> {
+  const devices = await discover(timeoutMs);
+  return devices.find((d) => d.host === host && d.location) ?? devices.find((d) => d.host === host);
+}
