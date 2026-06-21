@@ -90,11 +90,32 @@
       .b.raw { background: #3a2a12; color: var(--warn); }
       .b.jpg { background: #11324a; color: var(--accent); }
       .card-actions { display: flex; border-top: 1px solid var(--line); }
-      .card-actions a {
+      .card-actions a, .card-actions button {
         flex: 1; text-align: center; padding: 7px 0; font-size: 12px; font-weight: 600;
         color: var(--accent); text-decoration: none;
+        background: none; border: none; border-radius: 0; cursor: pointer;
       }
-      .card-actions a + a { border-left: 1px solid var(--line); }
+      .card-actions a + a, .card-actions button + a, .card-actions a + button,
+      .card-actions button + button { border-left: 1px solid var(--line); }
+      .card-actions a:hover, .card-actions button:hover { background: #1b2330; }
+
+      .dl-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
+      .dl-row:last-child { border-bottom: none; }
+      .dl-head { display: flex; align-items: baseline; gap: 8px; }
+      .dl-name { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .dl-status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+      .s-queued { color: var(--muted); }
+      .s-downloading { color: var(--accent); }
+      .s-done { color: var(--ok); }
+      .s-error { color: var(--err); }
+      .s-canceled { color: var(--warn); }
+      .dl-bar { height: 6px; background: #0b0d11; border-radius: 999px; overflow: hidden; margin: 6px 0; }
+      .dl-fill { height: 100%; background: var(--accent); width: 0; transition: width 0.2s ease; }
+      .dl-fill.done { background: var(--ok); }
+      .dl-fill.error { background: var(--err); }
+      .dl-meta { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+      .dl-meta .spacer { flex: 1; }
+      .dl-cancel { font-size: 11px; padding: 3px 10px; }
       #log {
         font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
         background: #0b0d11; border: 1px solid var(--line); border-radius: 8px;
@@ -153,6 +174,16 @@
       </section>
 
       <section class="panel">
+        <div class="row">
+          <h2 style="margin:0">Downloads</h2>
+          <span class="spacer"></span>
+          <span id="dl-dir" class="muted"></span>
+          <button id="btn-clear-dl">Clear finished</button>
+        </div>
+        <div id="downloads" style="margin-top:12px"><div class="muted">No downloads yet.</div></div>
+      </section>
+
+      <section class="panel">
         <h2>Live log</h2>
         <div id="log"></div>
       </section>
@@ -164,7 +195,9 @@
       const btnConnect = $("btn-connect"), btnDisconnect = $("btn-disconnect");
       const btnPhotos = $("btn-photos"), btnRefresh = $("btn-refresh");
       const filter = $("filter"), gallery = $("gallery"), galleryStatus = $("gallery-status");
+      const downloadsEl = $("downloads"), btnClearDl = $("btn-clear-dl"), dlDir = $("dl-dir");
       let allPhotos = [];
+      const downloads = new Map();
 
       function setBadge(stateClass, text) {
         badge.className = "badge " + stateClass;
@@ -220,6 +253,7 @@
           const r = await fetch("/api/status");
           const s = await r.json();
           $("target").textContent = s.target;
+          if (s.downloadDir) dlDir.textContent = "→ " + s.downloadDir;
           setConnected(s.connected);
           if (s.lastState) applyState(s.lastState);
         } catch (e) {
@@ -274,8 +308,9 @@
           (p.hasRaw ? '<span class="b raw">RAW</span>' : "") +
           (p.hasJpeg ? '<span class="b jpg">JPG</span>' : "");
         const actions =
-          (p.jpeg ? `<a href="${p.jpeg}" target="_blank" rel="noopener">JPG</a>` : "") +
-          (p.raw ? `<a href="${p.raw}">RW2</a>` : "");
+          (p.jpeg ? `<a href="${p.jpeg}" target="_blank" rel="noopener">View</a>` : "") +
+          (p.jpeg ? `<button class="dl" data-id="${esc(p.id)}" data-kind="jpeg">JPG&nbsp;&darr;</button>` : "") +
+          (p.raw ? `<button class="dl" data-id="${esc(p.id)}" data-kind="raw">RW2&nbsp;&darr;</button>` : "");
         return (
           `<div class="card">${thumb}` +
           `<div class="card-meta"><span class="name" title="${esc(p.title)}">${esc(p.title)}</span>${badges}</div>` +
@@ -310,10 +345,88 @@
       btnRefresh.addEventListener("click", () => loadPhotos(true));
       filter.addEventListener("change", renderPhotos);
 
+      // Download button on a card → enqueue a resumable save-to-disk download.
+      gallery.addEventListener("click", (e) => {
+        const btn = e.target.closest("button.dl");
+        if (btn) startDownload(btn.dataset.id, btn.dataset.kind);
+      });
+
+      // --- Downloads ---------------------------------------------------------
+      function fmtBytes(n) {
+        if (!n && n !== 0) return "";
+        const u = ["B", "KB", "MB", "GB"];
+        let i = 0;
+        while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+        return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+      }
+      function renderDownloads() {
+        const jobs = [...downloads.values()];
+        if (!jobs.length) {
+          downloadsEl.innerHTML = '<div class="muted">No downloads yet.</div>';
+          return;
+        }
+        downloadsEl.innerHTML = jobs.map(dlRow).join("");
+      }
+      function dlRow(j) {
+        const pct = j.total ? Math.min(100, Math.round((j.received / j.total) * 100)) : (j.status === "done" ? 100 : 0);
+        const fillClass = j.status === "done" ? "done" : j.status === "error" ? "error" : "";
+        const cancelable = j.status === "queued" || j.status === "downloading";
+        const detail = j.status === "error" && j.error ? ": " + esc(j.error) : "";
+        return (
+          `<div class="dl-row"><div class="dl-head">` +
+          `<span class="dl-name" title="${esc(j.name)}">${esc(j.name)}</span>` +
+          `<span class="dl-status s-${j.status}">${j.status}${detail}</span></div>` +
+          `<div class="dl-bar"><div class="dl-fill ${fillClass}" style="width:${pct}%"></div></div>` +
+          `<div class="dl-meta"><span>${fmtBytes(j.received)}${j.total ? " / " + fmtBytes(j.total) : ""} (${pct}%)</span>` +
+          `<span class="spacer"></span>` +
+          (cancelable ? `<button class="dl-cancel" data-id="${esc(j.id)}">Cancel</button>` : "") +
+          `</div></div>`
+        );
+      }
+      async function startDownload(id, kind) {
+        try {
+          const r = await fetch(`/api/photos/${encodeURIComponent(id)}/download?kind=${kind}`, { method: "POST" });
+          const body = await r.json();
+          if (r.ok && body.job) {
+            downloads.set(body.job.id, body.job);
+            renderDownloads();
+          } else {
+            addLog({ type: "error", time: new Date().toISOString(), message: "download failed: " + (body.error || r.status) });
+          }
+        } catch (e) {
+          addLog({ type: "error", time: new Date().toISOString(), message: "download failed: " + e.message });
+        }
+      }
+      downloadsEl.addEventListener("click", async (e) => {
+        const btn = e.target.closest("button.dl-cancel");
+        if (!btn) return;
+        await fetch(`/api/downloads/${encodeURIComponent(btn.dataset.id)}/cancel`, { method: "POST" });
+      });
+      btnClearDl.addEventListener("click", async () => {
+        const r = await fetch("/api/downloads/clear", { method: "POST" });
+        const body = await r.json();
+        downloads.clear();
+        for (const j of body.downloads || []) downloads.set(j.id, j);
+        renderDownloads();
+      });
+      async function loadDownloads() {
+        try {
+          const r = await fetch("/api/downloads");
+          const body = await r.json();
+          downloads.clear();
+          for (const j of body.downloads || []) downloads.set(j.id, j);
+          renderDownloads();
+        } catch { /* ignore */ }
+      }
+
       // Live updates via Server-Sent Events.
       const es = new EventSource("/api/events");
       es.onmessage = (e) => {
         const ev = JSON.parse(e.data);
+        if (ev.type === "download") {
+          if (ev.download) { downloads.set(ev.download.id, ev.download); renderDownloads(); }
+          return; // progress is shown in the panel, not the log
+        }
         addLog(ev);
         if (ev.type === "connected") setConnected(true);
         if (ev.type === "disconnected") { setConnected(false); applyState(null); }
@@ -322,6 +435,7 @@
       es.onerror = () => setBadge("error", "event stream lost");
 
       refreshStatus();
+      loadDownloads();
     </script>
   </body>
 </html>

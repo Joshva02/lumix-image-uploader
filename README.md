@@ -6,11 +6,11 @@ background downloading), not raw link throughput. The camera's Wi-Fi is the real
 bottleneck, so the architecture optimises for "see everything instantly, pull
 only what you want, in the background" rather than trying to out-run USB.
 
-> **Status: Phases 1–2.** The agent proves and holds the camera link (handshake
-> + keep-alive + `getstate`) **and** browses the card over UPnP to render a
-> thumbnail gallery, drivable from a [CLI](#usage) or a [browser UI](#web-ui-front-end).
-> Resumable/background downloads and the polished workflow come next — see
-> [Roadmap](#roadmap).
+> **Status: Phases 1–3.** The agent proves and holds the camera link (handshake
+> + keep-alive + `getstate`), browses the card over UPnP into a thumbnail
+> gallery, and downloads files to disk with **resume-on-failure and live
+> progress** — all drivable from a [CLI](#usage) or a [browser UI](#web-ui-front-end).
+> Background auto-pull and workflow polish come next — see [Roadmap](#roadmap).
 
 ## Architecture (where this is heading)
 
@@ -114,9 +114,17 @@ Open <http://localhost:4545>, click **Connect**, and the page shows the
 connection badge, live camera state (mode / battery / capacity), and a streaming
 log that updates on every keep-alive tick. Then click **Load photos** to switch
 the camera to playback, browse the card, and render a thumbnail **gallery** — each
-tile shows the file name, RAW/JPG badges, and links to open the full JPG or
-download the RW2. Filter by JPG/RAW, and **Refresh** to re-browse. Click
-**Disconnect** (or Ctrl+C in the terminal) to release the camera cleanly.
+tile shows the file name, RAW/JPG badges, a **View** link, and **JPG ↓ / RW2 ↓**
+buttons that save the file to disk. Filter by JPG/RAW, and **Refresh** to
+re-browse. Click **Disconnect** (or Ctrl+C in the terminal) to release the camera
+cleanly.
+
+The **Downloads** panel shows each save with a live progress bar. Downloads are
+**resumable**: each file streams to a `.part` sidecar, and if the Wi-Fi drops
+mid-transfer (which large RW2 pulls reliably do) the agent retries with backoff
+and resumes from the bytes already on disk via an HTTP `Range` request. Files
+land in the download directory (printed next to the panel; default `./downloads`,
+override with `LUMIX_DOWNLOAD_DIR`).
 
 > Thumbnails and files are **proxied through the agent** — the browser requests
 > `/api/photos/:id/thumb`, never the camera directly — so the same
@@ -143,7 +151,11 @@ agent exposes:
 | `POST /api/disconnect` | Stop keep-alive + release the camera.                       |
 | `GET  /api/photos`   | Switch to playback, browse the card via UPnP, list photos. `?refresh=1` re-browses. |
 | `GET  /api/photos/:id/thumb` | Proxied thumbnail bytes for one photo.                |
-| `GET  /api/photos/:id/file?kind=jpeg\|raw` | Proxied full JPG or RW2 (download). |
+| `GET  /api/photos/:id/file?kind=jpeg\|raw` | Proxied full JPG or RW2 (stream to browser). |
+| `POST /api/photos/:id/download?kind=jpeg\|raw` | Save the file to disk, resumable. Returns the job. |
+| `GET  /api/downloads` | List download jobs with progress.                            |
+| `POST /api/downloads/:id/cancel` | Cancel a queued or in-flight download.            |
+| `POST /api/downloads/clear` | Forget finished/errored/canceled jobs.                 |
 
 > SSE (browser `EventSource`) keeps the agent dependency-free and is enough for
 > one-way live updates in phase 1. Phase 4 upgrades this to a WebSocket when the
@@ -173,7 +185,10 @@ All config is also settable via env vars (handy for a stable controller
 identity): `LUMIX_HOST`, `LUMIX_PORT`, `LUMIX_CONTROLLER_NAME`, `LUMIX_GUID`,
 `LUMIX_KEEPALIVE_MS`, `LUMIX_TIMEOUT_MS`, `LUMIX_DISCOVERY_MS`, `LUMIX_WEB_PORT`,
 `LUMIX_CDS_DESCRIPTION_URL` (skip SSDP and point straight at the camera's UPnP
-description URL — useful when SSDP is flaky).
+description URL — useful when SSDP is flaky), `LUMIX_DOWNLOAD_DIR` (where files
+are saved, default `./downloads`), `LUMIX_DOWNLOAD_CONCURRENCY` (parallel
+downloads, default `2`), `LUMIX_DOWNLOAD_RETRIES` (resume attempts per file,
+default `4`).
 
 > Tip: set a fixed `LUMIX_GUID` so the camera recognises this agent as the same
 > controller across runs.
@@ -209,6 +224,7 @@ src/
     discovery.ts      SSDP (UPnP) discovery for client mode
     contentDirectory.ts  UPnP device-description + SOAP Browse + DIDL-Lite parsing
     catalog.ts        PhotoCatalog: playback → locate CDS → browse → cache
+    downloads.ts      DownloadManager: resumable, retrying save-to-disk + progress
     xml.ts            Minimal XML field extraction for cam.cgi / DIDL replies
 ```
 
@@ -243,10 +259,9 @@ built on top.
 2. **Browse + thumbnails** ✅ — switch to playback (`camcmd&value=playmode`), walk
    the UPnP ContentDirectory, list every shot with its thumbnail in a gallery
    grid (with JPG/RAW filter and per-file open/download links).
-3. **Selective download** — pull a chosen JPG, then a chosen RW2, with
-   resume-on-failure (HTTP range requests) and live progress. *(Files already
-   download via the proxy; phase 3 adds resume + progress + save-to-disk.)*
-4. **Web app polish** — richer gallery, WebSocket progress bars, bulk select.
+3. **Selective download** ✅ — pull a chosen JPG or RW2 to disk, with
+   resume-on-failure (HTTP `Range` requests + backoff) and live progress bars.
+4. **Web app polish** — richer gallery, bulk select, WebSocket progress.
 5. **Workflow polish** — background auto-pull of new shots, JPG-only fast mode,
    bulk select, auto-save to a watched folder / NAS / cloud.
 

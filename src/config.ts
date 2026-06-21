@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 /**
  * Phase-1 agent configuration.
@@ -32,6 +33,12 @@ export interface AgentConfig {
    *  uses it directly instead of locating the ContentDirectory via SSDP (handy
    *  when SSDP is flaky, or for testing). */
   cdsDescriptionUrl?: string;
+  /** Directory downloaded files are saved to. */
+  downloadDir: string;
+  /** How many downloads run at once. Wi-Fi is the bottleneck, so keep this low. */
+  downloadConcurrency: number;
+  /** Retries per download before giving up; each retry resumes from disk. */
+  downloadRetries: number;
 }
 
 /**
@@ -53,6 +60,9 @@ export function loadConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     discoveryTimeoutMs: Number(process.env.LUMIX_DISCOVERY_MS ?? 4000),
     webPort: Number(process.env.LUMIX_WEB_PORT ?? 4545),
     cdsDescriptionUrl: process.env.LUMIX_CDS_DESCRIPTION_URL,
+    downloadDir: process.env.LUMIX_DOWNLOAD_DIR ?? path.resolve("downloads"),
+    downloadConcurrency: Number(process.env.LUMIX_DOWNLOAD_CONCURRENCY ?? 2),
+    downloadRetries: Number(process.env.LUMIX_DOWNLOAD_RETRIES ?? 4),
     ...overrides,
   };
 }

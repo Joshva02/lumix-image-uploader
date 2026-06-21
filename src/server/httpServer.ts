@@ -7,6 +7,7 @@ import type { CameraState, LumixClient } from "../lumix/client.ts";
 import { CamCgiError } from "../lumix/camCgi.ts";
 import { PhotoCatalog } from "../lumix/catalog.ts";
 import type { Photo } from "../lumix/contentDirectory.ts";
+import { DownloadManager, type DownloadJob, type DownloadKind } from "../lumix/downloads.ts";
 
 /**
  * The agent's web surface.
@@ -25,6 +26,10 @@ import type { Photo } from "../lumix/contentDirectory.ts";
  *   GET  /api/photos             browse the card; list photos (?refresh=1)
  *   GET  /api/photos/:id/thumb   proxied thumbnail bytes
  *   GET  /api/photos/:id/file    proxied full file (?kind=jpeg|raw)
+ *   POST /api/photos/:id/download   save a file to disk (?kind=jpeg|raw), resumable
+ *   GET  /api/downloads          list download jobs + progress
+ *   POST /api/downloads/:id/cancel  cancel a download
+ *   POST /api/downloads/clear    forget finished jobs
  *
  * Live push uses SSE (built into the browser via EventSource, zero deps). Phase
  * 4 can upgrade this to a WebSocket when bidirectional/binary progress is needed.
@@ -32,6 +37,18 @@ import type { Photo } from "../lumix/contentDirectory.ts";
 
 const PHOTO_THUMB_RE = /^\/api\/photos\/([^/]+)\/thumb$/;
 const PHOTO_FILE_RE = /^\/api\/photos\/([^/]+)\/file$/;
+const PHOTO_DOWNLOAD_RE = /^\/api\/photos\/([^/]+)\/download$/;
+const DOWNLOAD_CANCEL_RE = /^\/api\/downloads\/([^/]+)\/cancel$/;
+
+/** Safe on-disk file name for a photo + kind, e.g. "P1000001.rw2". */
+function fileNameFor(photo: Photo, kind: DownloadKind): string {
+  const ext = kind === "raw" ? ".rw2" : ".jpg";
+  const base = (photo.title || photo.id)
+    .replace(/[/\\:*?"<>|]/g, "_")
+    .replace(/\.(jpe?g|rw2)$/i, "")
+    .trim();
+  return `${base || photo.id}${ext}`;
+}
 
 /** Shape sent to the front end — camera URLs stay server-side; the browser only
  *  ever sees agent-proxied paths. */
@@ -52,11 +69,20 @@ function toSummary(p: Photo): Record<string, unknown> {
 const PUBLIC_DIR = path.resolve(import.meta.dirname, "../../public");
 
 interface SseEvent {
-  type: "connected" | "state" | "disconnected" | "keepalive-error" | "info" | "error" | "photos";
+  type:
+    | "connected"
+    | "state"
+    | "disconnected"
+    | "keepalive-error"
+    | "info"
+    | "error"
+    | "photos"
+    | "download";
   time: string;
   message?: string;
   state?: CameraState;
   count?: number;
+  download?: DownloadJob;
 }
 
 export interface AgentServer {
@@ -68,6 +94,11 @@ export interface AgentServer {
 export function startServer(client: LumixClient, config: AgentConfig): Promise<AgentServer> {
   const sseClients = new Set<http.ServerResponse>();
   const catalog = new PhotoCatalog(config, client);
+  const downloads = new DownloadManager({
+    dir: config.downloadDir,
+    concurrency: config.downloadConcurrency,
+    maxRetries: config.downloadRetries,
+  });
   let lastState: CameraState | undefined;
 
   const now = (): string => new Date().toISOString();
@@ -94,6 +125,11 @@ export function startServer(client: LumixClient, config: AgentConfig): Promise<A
     broadcast({ type: "disconnected", time: now() });
   });
 
+  // Forward download progress to the UI.
+  downloads.on("update", (job) => {
+    broadcast({ type: "download", time: now(), download: job });
+  });
+
   const sendJson = (res: http.ServerResponse, status: number, body: unknown): void => {
     const text = JSON.stringify(body);
     res.writeHead(status, {
@@ -113,6 +149,7 @@ export function startServer(client: LumixClient, config: AgentConfig): Promise<A
       },
       keepAliveIntervalMs: config.keepAliveIntervalMs,
       lastState: lastState ?? null,
+      downloadDir: config.downloadDir,
     });
   };
 
@@ -254,19 +291,53 @@ export function startServer(client: LumixClient, config: AgentConfig): Promise<A
     await proxyMedia(res, url, photo.title);
   };
 
+  /** Enqueue a resumable save-to-disk download for one photo + kind. */
+  const handleDownload = (res: http.ServerResponse, id: string, kind: string | null): void => {
+    const photo = catalog.get(id);
+    if (!photo) {
+      sendJson(res, 404, { error: "unknown photo id" });
+      return;
+    }
+    const wantRaw = kind === "raw";
+    const downloadKind: DownloadKind = wantRaw ? "raw" : "jpeg";
+    const url = wantRaw ? photo.rawUrl : photo.jpegUrl;
+    if (!url) {
+      sendJson(res, 404, { error: `no ${downloadKind} for this photo` });
+      return;
+    }
+    const totalHint = photo.res.find((r) => r.url === url)?.size;
+    const job = downloads.enqueue({
+      photoId: photo.id,
+      kind: downloadKind,
+      url,
+      name: fileNameFor(photo, downloadKind),
+      totalHint,
+    });
+    sendJson(res, 202, { ok: true, job });
+  };
+
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const route = `${req.method} ${url.pathname}`;
 
     void (async () => {
       try {
-        // Parameterized photo routes (id is URL-encoded in the path).
+        // Parameterized routes (ids are URL-encoded in the path).
         if (req.method === "GET") {
           const thumb = PHOTO_THUMB_RE.exec(url.pathname);
           if (thumb) return await handleThumb(res, decodeURIComponent(thumb[1] as string));
           const file = PHOTO_FILE_RE.exec(url.pathname);
           if (file) {
             return await handleFile(res, decodeURIComponent(file[1] as string), url.searchParams.get("kind"));
+          }
+        }
+        if (req.method === "POST") {
+          const dl = PHOTO_DOWNLOAD_RE.exec(url.pathname);
+          if (dl) return handleDownload(res, decodeURIComponent(dl[1] as string), url.searchParams.get("kind"));
+          const cancel = DOWNLOAD_CANCEL_RE.exec(url.pathname);
+          if (cancel) {
+            const ok = downloads.cancel(decodeURIComponent(cancel[1] as string));
+            return sendJson(res, ok ? 200 : 404, { ok });
           }
         }
 
@@ -280,6 +351,11 @@ export function startServer(client: LumixClient, config: AgentConfig): Promise<A
             return handleEvents(req, res);
           case "GET /api/photos":
             return await handlePhotos(res, url.searchParams.get("refresh") === "1");
+          case "GET /api/downloads":
+            return sendJson(res, 200, { downloads: downloads.list() });
+          case "POST /api/downloads/clear":
+            downloads.clearFinished();
+            return sendJson(res, 200, { ok: true, downloads: downloads.list() });
           case "POST /api/connect":
             return await handleConnect(res);
           case "POST /api/disconnect":
